@@ -1,0 +1,34 @@
+{
+  "name": "@viget/astro-choreo",
+  "version": "0.1.0",
+  "description": "Minimal, library-agnostic component orchestration for Astro: automatic DOM detection, dependency-ordered initialization, global event coordination, and cleanup.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/viget/astro-choreo"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "!src/*.test.ts"
+  ],
+  "keywords": [
+    "astro-component",
+    "withastro",
+    "animation",
+    "orchestration",
+    "components"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.8.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

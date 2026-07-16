@@ -1,22 +1,22 @@
-import { ComponentSystem } from './system';
-import type { ComponentDefinition } from './system';
+import { Choreo } from './choreo';
+import type { ComponentDefinition } from './choreo';
 
-export { ComponentSystem };
-export type { Viewport, ComponentContext, ComponentDefinition, CleanupFn } from './system';
+export { Choreo };
+export type { Viewport, ComponentContext, ComponentDefinition, CleanupFn } from './choreo';
 
 declare global {
   interface Window {
-    __componentSystem?: ComponentSystem;
+    __choreo?: Choreo;
   }
 }
 
-let system: ComponentSystem | undefined;
+let system: Choreo | undefined;
 
-function getSystem(): ComponentSystem {
+function getSystem(): Choreo {
   if (!system) {
-    system = new ComponentSystem();
+    system = new Choreo();
     if (import.meta.env.DEV) {
-      window.__componentSystem = system;
+      window.__choreo = system;
     }
   }
   return system;

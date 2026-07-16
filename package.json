@@ -1,12 +1,17 @@
 {
-  "name": "@viget/astro-choreo",
+  "name": "@viget/choreo",
   "version": "0.1.0",
-  "description": "Minimal, library-agnostic component orchestration for Astro: automatic DOM detection, dependency-ordered initialization, global event coordination, and cleanup.",
+  "description": "Choreo — minimal, library-agnostic component orchestration for Astro: automatic DOM detection, dependency-ordered initialization, global event coordination, and cleanup.",
   "type": "module",
   "license": "MIT",
+  "author": "Viget (https://www.viget.com)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/viget/astro-choreo"
+    "url": "git+https://github.com/viget/choreo.git"
+  },
+  "homepage": "https://github.com/viget/choreo#readme",
+  "bugs": {
+    "url": "https://github.com/viget/choreo/issues"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -18,10 +23,14 @@
   "keywords": [
     "astro-component",
     "withastro",
+    "choreo",
     "animation",
     "orchestration",
     "components"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

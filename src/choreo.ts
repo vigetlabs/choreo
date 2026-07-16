@@ -7,7 +7,7 @@ export interface ComponentContext {
   element: HTMLElement;
   viewport: Readonly<Viewport>;
   prefersReducedMotion: boolean;
-  system: ComponentSystem;
+  system: Choreo;
   ac: AbortController;
   find: <T extends Element>(selector: string) => T | null;
   findAll: <T extends Element>(selector: string) => T[];
@@ -37,14 +37,16 @@ interface Instance {
   cleanup: CleanupFn | undefined;
 }
 
-export class ComponentSystem {
+export class Choreo {
   private definitions = new Map<string, ComponentDefinition>();
   private instances: Instance[] = [];
+  private active = new Set<HTMLElement>();
   private viewport: Viewport;
   private prefersReducedMotion: boolean;
   private subscribers = new Map<string, Set<AnyEventCallback>>();
   private scanning = false;
   private _scanTriggered = false;
+  private _rescanRequested = false;
 
   private _resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private _mediaQuery: MediaQueryList;
@@ -52,7 +54,7 @@ export class ComponentSystem {
   private readonly _onResize: () => void;
   private readonly _onMotionChange: (e: MediaQueryListEvent) => void;
   private readonly _onPageLoad: () => void;
-  private readonly _onBeforeUnload: () => void;
+  private readonly _onPageHide: (e: PageTransitionEvent) => void;
   private readonly _onLoad: () => void;
 
   constructor() {
@@ -81,27 +83,45 @@ export class ComponentSystem {
     };
 
     this._onPageLoad = () => {
-      if (this.scanning) return;
+      // A navigation while a scan is running must not be dropped — queue a
+      // re-scan so the new page's components still initialize.
+      if (this.scanning) {
+        this._rescanRequested = true;
+        return;
+      }
       this.destroy();
-      void this.scan();
+      this.scan().catch(err => console.error('[choreo] scan failed', err));
     };
 
-    this._onBeforeUnload = () => {
-      this.destroy();
+    // pagehide (not beforeunload): beforeunload also fires on navigations the
+    // user cancels, and blocks the back/forward cache in some browsers. When
+    // the page is persisted into the bfcache, instances are left intact so the
+    // page resumes working on restore.
+    this._onPageHide = (e: PageTransitionEvent) => {
+      if (!e.persisted) this.destroy();
     };
 
     // Fallback initial scan for sites without <ClientRouter />.
     // If astro:page-load already fired (or fires synchronously during this same
     // load event via ClientRouter), _scanTriggered will be true and we skip.
     this._onLoad = () => {
-      if (!this._scanTriggered) void this.scan();
+      if (!this._scanTriggered) {
+        this.scan().catch(err => console.error('[choreo] scan failed', err));
+      }
     };
 
     window.addEventListener('resize', this._onResize);
     mq.addEventListener('change', this._onMotionChange);
     document.addEventListener('astro:page-load', this._onPageLoad);
-    window.addEventListener('beforeunload', this._onBeforeUnload);
-    window.addEventListener('load', this._onLoad, { once: true });
+    window.addEventListener('pagehide', this._onPageHide);
+
+    if (document.readyState === 'complete') {
+      // Module loaded after the load event (e.g. dynamic import) — the load
+      // listener would never fire, so schedule the fallback scan directly.
+      queueMicrotask(this._onLoad);
+    } else {
+      window.addEventListener('load', this._onLoad, { once: true });
+    }
   }
 
   register(name: string, def: ComponentDefinition): void {
@@ -117,30 +137,37 @@ export class ComponentSystem {
       const elements = Array.from(document.querySelectorAll<HTMLElement>('[data-component]'));
 
       const known = elements.filter(el => {
+        if (this.active.has(el)) return false;
         const name = el.getAttribute('data-component');
         return name !== null && this.definitions.has(name);
       });
 
-      if (known.length === 0) return;
-
-      const namesPresent = new Set(
-        known.map(el => el.getAttribute('data-component') as string),
-      );
-
-      const waves = this._computeWaves(namesPresent);
-
-      for (const wave of waves) {
-        await Promise.all(
-          wave.flatMap(name => {
-            const def = this.definitions.get(name)!;
-            return known
-              .filter(el => el.getAttribute('data-component') === name)
-              .map(el => this._initInstance(name, el, def));
-          }),
+      if (known.length > 0) {
+        const namesPresent = new Set(
+          known.map(el => el.getAttribute('data-component') as string),
         );
+
+        const waves = this._computeWaves(namesPresent);
+
+        for (const wave of waves) {
+          await Promise.all(
+            wave.flatMap(name => {
+              const def = this.definitions.get(name)!;
+              return known
+                .filter(el => el.getAttribute('data-component') === name)
+                .map(el => this._initInstance(name, el, def));
+            }),
+          );
+        }
       }
     } finally {
       this.scanning = false;
+    }
+
+    if (this._rescanRequested) {
+      this._rescanRequested = false;
+      this.destroy();
+      return this.scan();
     }
   }
 
@@ -196,6 +223,7 @@ export class ComponentSystem {
     const ac = new AbortController();
     const instance: Instance = { name, element, ac, cleanup: undefined };
     this.instances.push(instance);
+    this.active.add(element);
 
     const ctx: ComponentContext = {
       element,
@@ -206,9 +234,15 @@ export class ComponentSystem {
       find: <T extends Element>(selector: string) => element.querySelector<T>(selector),
       findAll: <T extends Element>(selector: string) =>
         Array.from(element.querySelectorAll<T>(selector)),
-      ref: <T extends Element>(refName: string) =>
-        element.querySelector<T>(`[data-ref="${refName}"]`),
-      log: (import.meta as { env?: { DEV?: boolean } }).env?.DEV
+      // Exact attribute comparison instead of selector interpolation — a ref
+      // name containing CSS-significant characters can't break the query.
+      ref: <T extends Element>(refName: string) => {
+        for (const el of element.querySelectorAll<T>('[data-ref]')) {
+          if (el.getAttribute('data-ref') === refName) return el;
+        }
+        return null;
+      },
+      log: import.meta.env.DEV
         ? (msg: string, ...args: unknown[]) =>
             console.log(`[${name}] ${msg}`, ...args, element)
         : () => {},
@@ -226,7 +260,7 @@ export class ComponentSystem {
         }
       }
     } catch (err) {
-      console.warn(`[ComponentSystem] '${name}' init failed on`, element);
+      console.warn(`[choreo] '${name}' init failed on`, element);
       console.warn(err);
     }
   }
@@ -234,9 +268,15 @@ export class ComponentSystem {
   destroy(): void {
     for (const instance of this.instances) {
       instance.ac.abort();
-      instance.cleanup?.();
+      try {
+        instance.cleanup?.();
+      } catch (err) {
+        console.warn(`[choreo] '${instance.name}' cleanup failed on`, instance.element);
+        console.warn(err);
+      }
     }
     this.instances = [];
+    this.active.clear();
   }
 
   dispose(): void {
@@ -245,7 +285,7 @@ export class ComponentSystem {
     window.removeEventListener('resize', this._onResize);
     this._mediaQuery.removeEventListener('change', this._onMotionChange);
     document.removeEventListener('astro:page-load', this._onPageLoad);
-    window.removeEventListener('beforeunload', this._onBeforeUnload);
+    window.removeEventListener('pagehide', this._onPageHide);
     window.removeEventListener('load', this._onLoad);
     if (this._resizeTimer !== null) {
       clearTimeout(this._resizeTimer);
@@ -258,6 +298,10 @@ export class ComponentSystem {
     callback: (payload: EventMap[E]) => void,
     options?: { signal?: AbortSignal },
   ): void {
+    // Match DOM addEventListener semantics: an already-aborted signal means
+    // the listener is never added.
+    if (options?.signal?.aborted) return;
+
     if (!this.subscribers.has(event)) {
       this.subscribers.set(event, new Set());
     }
@@ -281,7 +325,11 @@ export class ComponentSystem {
     const subs = this.subscribers.get(event);
     if (!subs) return;
     for (const cb of [...subs]) {
-      cb(payload);
+      try {
+        cb(payload);
+      } catch (err) {
+        console.warn(`[choreo] '${event}' subscriber threw`, err);
+      }
     }
   }
 }

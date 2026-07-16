@@ -1,29 +1,25 @@
-# Astro Choreo
+# Choreo
 
-Minimal, library-agnostic component orchestration for [Astro](https://astro.build) projects, focused on animation. Choreo handles DOM detection, dependency-ordered initialization, global event coordination, and cleanup — so component authors focus only on animation logic.
+A minimal, library-agnostic, component choreography layer for [Astro](https://astro.build) projects, focused on motion and interactive components.
+
+Choreo handle the coordination, initialization, and cleanup of components so authors can focus on interaction.
 
 - **Automatic DOM detection** via `data-component` attributes
 - **Dependency-ordered initialization** using Kahn's topological sort (BFS)
-- **Async readiness signaling** — a component is "ready" when its `init()` resolves
-- **Global event coordination** — resize, prefers-reduced-motion, view transitions, unload
+- **Async readiness signaling** — Component signal their "ready" state
+- **Global event coordination** — Coordinates commonly tracked events: resize, prefers-reduced-motion, view transitions, unload
 - **Multiple instances** — every matching element gets its own isolated instance
-- **Single-file Astro component editing** — define components in `.astro` `<script>` tags
-- **Resilient error handling** — a failed `init()` logs a warning, never crashes the system
-- **Zero dependencies, no build step** — ships raw TypeScript source that your project's Vite compiles
+- **Single-file Astro component editing** — designed for single-file components in `.astro` with `<script>` tags
+- **Resilient error handling** — components fail without crashing the system
+- **Zero dependencies, no build step** — raw TypeScript source that your own project's Vite compiles
 
 ## Installation
 
 ```sh
-npm install @viget/astro-choreo
+npm install @viget/choreo
 ```
 
-Or straight from GitHub without the npm registry:
-
-```sh
-npm install viget/astro-choreo
-```
-
-The package ships `.ts` source (per [Astro's component-package convention](https://docs.astro.build/en/reference/publish-to-npm/)) and is compiled by your project's Vite — dev-only debugging code is stripped from production builds automatically. It works in any Vite-based site; Astro's `<ClientRouter />` view transitions are supported out of the box, with a `window` `load` fallback for plain MPA sites.
+Intended for use in any Vite-based site; Astro's `<ClientRouter />` view transitions are supported out of the box, with a `window` `load` fallback for plain MPA sites.
 
 ## Quick start
 
@@ -31,13 +27,15 @@ The package ships `.ts` source (per [Astro's component-package convention](https
 ---
 // src/components/Accordion.astro
 ---
+<!-- data-component marks component root -->
 <div data-component="accordion">
+  <!-- data-ref marks a child element for easy retrieval later -->
   <button data-ref="trigger">Open</button>
   <div data-ref="panel">...</div>
 </div>
 
 <script>
-  import { defineComponent } from '@viget/astro-choreo';
+  import { defineComponent } from '@viget/choreo';
 
   defineComponent('accordion', {
     init({ element, ref, ac }) {
@@ -52,21 +50,28 @@ The package ships `.ts` source (per [Astro's component-package convention](https
 </script>
 ```
 
-One component name per element. If `Accordion.astro` is rendered 50 times, Astro deduplicates the script — `defineComponent` runs once, and 50 isolated instances are created during the scan.
+This shows a simple example of setting up a component and invoking Choreo.
 
-## Data Attribute Convention
+1. Each component is identified with a `data-component` and a unique name
+2. (Optional) Child elements that will be needed later are marked with `data-ref` and a unique name, accessed via the `ref()` helper later.
+3. The co-located `<script>` tag imports Choreo and uses the wrapping `defineComponent()` function and the name of the component to attach to (ex. `accordion`).
+4. Runtime logic lives in the `init()` function, which receives commonly needed info from Choreo (see Component Context).
 
-- `data-component="name"` marks an element as a component root. The name is matched against registered definitions; unknown names are silently skipped.
-- `data-ref="name"` names structural child elements, accessed via the `ref()` context helper.
+Script duduping is currently handled by default in Astro. The script runs once, and isolated instances are created for every matching component during the scan.
 
 ## API
 
 ### `defineComponent(name, definition)`
 
-Registers a component definition with the shared system singleton. Safe to import anywhere (including SSR) — it only does work in the browser.
+The main wrapper function. Registers a component definition with the shared Choreo singleton.
+
+The component definition expects two shapes:
+
+1. `deps` (Default of `[]`) An array of other components that are dependencies. Choreo will ensure everything in this array initialize first. Dependencies that are absent from the DOM will silently fail (no blocking).
+2. `init()` The runtime of the component, that receives commonly used information from Choreo (see Component Context)
 
 ```typescript
-import { defineComponent } from '@viget/astro-choreo';
+import { defineComponent } from '@viget/choreo';
 
 defineComponent('hero', {
   deps: ['nav'],  // optional — wait for 'nav' instances to finish init
@@ -99,28 +104,15 @@ Each `init()` call receives:
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `element` | `HTMLElement` | The DOM element bound to this instance |
+| `element` | `HTMLElement` | The DOM element bound to this instance (identified by `data-component`) |
 | `viewport` | `Readonly<Viewport>` | Live reference — always current `{ width, height }` |
 | `prefersReducedMotion` | `boolean` | Value at time of init |
-| `system` | `ComponentSystem` | System reference for `on`/`off` event subscription |
+| `system` | `Choreo` | System reference for `on`/`off` event subscription |
 | `ac` | `AbortController` | System-managed controller — aborted on destroy |
 | `find` | `<T extends Element>(selector: string) => T \| null` | `querySelector` scoped to `element` |
 | `findAll` | `<T extends Element>(selector: string) => T[]` | `querySelectorAll` scoped to `element`, returns an array |
 | `ref` | `<T extends Element>(name: string) => T \| null` | Finds `[data-ref="name"]` within `element` |
 | `log` | `(msg: string, ...args: unknown[]) => void` | Dev-only logger prefixed with the component name |
-
-### Definition shape
-
-```typescript
-interface ComponentDefinition {
-  deps?: string[];
-  init(ctx: ComponentContext): void | CleanupFn | Promise<void | CleanupFn>;
-}
-
-type CleanupFn = () => void;
-```
-
-`deps` defaults to `[]`. A dep that is registered but absent from the current DOM is silently ignored — no blocking.
 
 ### `system.on(event, callback, options?)` / `system.off(event, callback)`
 
@@ -128,10 +120,10 @@ Opt-in subscription to global system events:
 
 | Event | Callback payload |
 |-------|-----------------|
-| `'resize'` | `{ viewport: Viewport }` (throttled 250ms) |
+| `'resize'` | `{ viewport: Viewport }` (debounced 250ms — fires once resizing settles) |
 | `'motionchange'` | `{ prefersReducedMotion: boolean }` |
 
-When an `AbortSignal` is passed, the listener is removed automatically on abort — one `AbortController` can clean up DOM and system listeners together:
+When an `AbortSignal` is passed, the listener is removed automatically on abort — one `AbortController` can clean up DOM and system listeners together. An already-aborted signal means the listener is never added, matching DOM `addEventListener` semantics. A subscriber that throws is logged and skipped; it never blocks other subscribers.
 
 ```typescript
 system.on('resize', ({ viewport }) => { /* ... */ }, { signal: ac.signal });
@@ -144,11 +136,11 @@ On destroy (page navigation, unload):
 1. The instance's `ac.abort()` fires — removes all listeners registered with `ac.signal`
 2. The cleanup function returned from `init()` runs (if any)
 
-Components that route all listeners through `ac.signal` need no return value.
+Components that route all listeners through `ac.signal` need no return value. A cleanup function that throws is logged and skipped — it never blocks other instances' cleanup.
 
 ## Dependency ordering
 
-Components declare `deps: string[]`. Initialization runs in waves computed with Kahn's topological sort:
+Components declare `deps: string[]`. Initialization runs in waves:
 
 ```
 Wave 0: ['footer', 'nav']   // no deps
@@ -162,27 +154,29 @@ Waves run sequentially; instances within a wave initialize concurrently. A faile
 
 | Event | Behavior |
 |-------|----------|
-| `window resize` | Throttled 250ms → updates `viewport`, emits `'resize'` |
+| `window resize` | Debounced 250ms → updates `viewport`, emits `'resize'` |
 | `prefers-reduced-motion` change | Updates state, emits `'motionchange'` |
-| `astro:page-load` | Destroys all instances, re-scans the DOM |
-| `window load` | Fallback initial scan for sites without `<ClientRouter />` |
-| `window beforeunload` | Destroys all instances |
+| `astro:page-load` | Destroys all instances, re-scans the DOM (a navigation that lands mid-scan queues a re-scan rather than being dropped) |
+| `window load` | Fallback initial scan for sites without `<ClientRouter />`; if the module loads after the `load` event (e.g. via dynamic import), the scan is scheduled immediately |
+| `window pagehide` | Destroys all instances on real unloads. When the page enters the back/forward cache (`persisted: true`), instances are left intact so the restored page keeps working |
 
 ## Debugging
 
-In development the singleton is exposed as `window.__componentSystem` (stripped from production builds):
+In development the singleton is exposed as `window.__choreo` (stripped from production builds):
 
 ```js
-__componentSystem.instances   // active instances
-__componentSystem.viewport    // current viewport
-__componentSystem.scanning    // scan in progress?
-__componentSystem.scan()      // manually re-scan
+__choreo.instances   // active instances
+__choreo.viewport    // current viewport
+__choreo.scanning    // scan in progress?
+__choreo.scan()      // scan for newly added [data-component] elements
 ```
 
-The `log` context helper prefixes output with the component name and element, and is a no-op in production:
+Elements that already have a live instance are skipped by `scan()`, so calling it manually only picks up elements added to the DOM since the last scan — it never double-initializes.
+
+The `log` context helper prefixes output with the component name, and is a no-op in production:
 
 ```
-[hero] init { width: 1440, height: 900 }  <div data-component="hero">
+[hero] init { width: 1440, height: 900 }
 ```
 
 ## Development
@@ -194,3 +188,19 @@ npm run typecheck # tsc --noEmit
 ```
 
 Tests live alongside the source in `src/*.test.ts` and are excluded from the published package.
+
+## AI
+
+AI (Claude Code) was used as an assistant to accelerate feature development, streamline QA, and to help catch errors before they ship. Read more about [how we use AI at Viget](https://www.viget.com/ai).
+
+Lightweight provisions have been made for code assistants for future feature development:
+
+| File | Purpose |
+|-------|----------|
+| `CLAUDE.md` | Automatically read by Claude, points to context and sets boundaries |
+| `CONTEXT.md` | Living reference for AI agents to supply commands, architecture, and reasoning for future sessions |
+
+## License
+
+[MIT](./LICENSE) © Viget Labs, LLC
+

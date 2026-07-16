@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ComponentSystem, type CleanupFn } from './system';
+import { Choreo, type CleanupFn } from './choreo';
 
 // Helpers
 
@@ -19,7 +19,7 @@ function addRef(parent: Element, refName: string): HTMLElement {
 
 // Fixtures
 
-let sys: ComponentSystem;
+let sys: Choreo;
 
 beforeEach(() => {
   Object.defineProperty(window, 'matchMedia', {
@@ -33,7 +33,14 @@ beforeEach(() => {
     }),
   });
 
-  sys = new ComponentSystem();
+  // happy-dom reports 'complete', which would trigger the constructor's
+  // late-load fallback scan; pin to 'loading' so tests control scanning.
+  Object.defineProperty(document, 'readyState', {
+    configurable: true,
+    get: () => 'loading',
+  });
+
+  sys = new Choreo();
 });
 
 afterEach(() => {
@@ -258,7 +265,7 @@ describe('Context values', () => {
       findAll: unknown;
       ref: unknown;
       log: unknown;
-      system: ComponentSystem;
+      system: Choreo;
     };
 
     expect(ctx.element).toBe(el);
@@ -396,6 +403,23 @@ describe('window load fallback', () => {
     await initDone;
   });
 
+  it('scans on construction when the document has already finished loading', async () => {
+    // Module loaded after the load event (e.g. dynamic import) — the load
+    // listener would never fire, so the constructor schedules the scan itself.
+    Object.defineProperty(document, 'readyState', {
+      configurable: true,
+      get: () => 'complete',
+    });
+    const late = new Choreo();
+    const init = vi.fn();
+    late.register('foo', { init });
+    addComponent('foo');
+
+    await new Promise(r => setTimeout(r, 0));
+    expect(init).toHaveBeenCalledOnce();
+    late.dispose();
+  });
+
   it('is a no-op when scan is already in progress (astro:page-load fired first)', async () => {
     let initCount = 0;
     let resolveInit!: () => void;
@@ -447,7 +471,7 @@ describe('Concurrent scan', () => {
     expect(initCount).toBe(1);
   });
 
-  it('second astro:page-load mid-scan is ignored', async () => {
+  it('astro:page-load mid-scan queues a re-scan instead of dropping the navigation', async () => {
     let initCount = 0;
     let resolveInit!: () => void;
 
@@ -460,14 +484,16 @@ describe('Concurrent scan', () => {
     addComponent('slow');
 
     const first = sys.scan();
-    // Simulate second page-load while scanning
+    // Navigation fires while the first scan is still running
     document.dispatchEvent(new Event('astro:page-load'));
 
+    // Not re-entered concurrently
     expect(initCount).toBe(1);
 
-    resolveInit();
+    resolveInit(); // first init settles
+    await vi.waitFor(() => expect(initCount).toBe(2)); // queued re-scan ran
+    resolveInit(); // let the re-scan's init settle
     await first;
-    expect(initCount).toBe(1);
   });
 });
 
@@ -774,5 +800,159 @@ describe('dispose()', () => {
     sys.on('resize', cb);
     sys.dispose(); // clears subscribers + removes listeners
     expect(() => sys.dispose()).not.toThrow(); // second dispose on empty state is safe
+  });
+});
+
+// pagehide
+
+// happy-dom's PageTransitionEvent constructor ignores the persisted option,
+// so stamp the flag onto a plain Event instead.
+function pagehideEvent(persisted: boolean): Event {
+  const e = new Event('pagehide');
+  Object.defineProperty(e, 'persisted', { value: persisted });
+  return e;
+}
+
+describe('pagehide', () => {
+  it('destroys instances on real unload (persisted: false)', async () => {
+    const cleanup = vi.fn();
+    sys.register('foo', { init: () => cleanup });
+    addComponent('foo');
+    await sys.scan();
+
+    window.dispatchEvent(pagehideEvent(false));
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('leaves instances intact when the page enters the bfcache (persisted: true)', async () => {
+    const cleanup = vi.fn();
+    sys.register('foo', { init: () => cleanup });
+    addComponent('foo');
+    await sys.scan();
+
+    window.dispatchEvent(pagehideEvent(true));
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+});
+
+// Manual re-scan
+
+describe('manual re-scan', () => {
+  it('scan() skips elements that already have a live instance', async () => {
+    const init = vi.fn();
+    sys.register('card', { init });
+    addComponent('card');
+    await sys.scan();
+    expect(init).toHaveBeenCalledTimes(1);
+
+    await sys.scan(); // nothing new — no duplicate instances
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it('scan() picks up elements added to the DOM after the initial scan', async () => {
+    const init = vi.fn();
+    sys.register('card', { init });
+    addComponent('card');
+    await sys.scan();
+
+    addComponent('card');
+    await sys.scan();
+    expect(init).toHaveBeenCalledTimes(2);
+  });
+
+  it('after destroy(), scan() re-initializes all elements', async () => {
+    const init = vi.fn();
+    sys.register('card', { init });
+    addComponent('card');
+    await sys.scan();
+    sys.destroy();
+    await sys.scan();
+    expect(init).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Error isolation
+
+describe('error isolation', () => {
+  it('a throwing cleanup does not prevent other cleanups from running', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const goodCleanup = vi.fn();
+    sys.register('bad', { init: () => () => { throw new Error('boom'); } });
+    sys.register('good', { init: () => goodCleanup });
+    addComponent('bad');
+    addComponent('good');
+    await sys.scan();
+
+    expect(() => sys.destroy()).not.toThrow();
+    expect(goodCleanup).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('a throwing subscriber does not prevent other subscribers from firing', () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bad = vi.fn(() => { throw new Error('boom'); });
+    const good = vi.fn();
+    sys.on('resize', bad);
+    sys.on('resize', good);
+
+    window.dispatchEvent(new Event('resize'));
+    vi.advanceTimersByTime(250);
+
+    expect(bad).toHaveBeenCalledOnce();
+    expect(good).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('a scan failure triggered by astro:page-load logs instead of rejecting unhandled', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sys.register('a', { deps: ['b'], init: vi.fn() });
+    sys.register('b', { deps: ['a'], init: vi.fn() });
+    addComponent('a');
+    addComponent('b');
+
+    document.dispatchEvent(new Event('astro:page-load'));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(errorSpy).toHaveBeenCalledWith('[choreo] scan failed', expect.any(Error));
+    errorSpy.mockRestore();
+  });
+});
+
+// on() with pre-aborted signal
+
+describe('on() with an already-aborted signal', () => {
+  it('never adds the listener (matches DOM addEventListener semantics)', () => {
+    vi.useFakeTimers();
+    const ac = new AbortController();
+    ac.abort();
+    const cb = vi.fn();
+
+    sys.on('resize', cb, { signal: ac.signal });
+    window.dispatchEvent(new Event('resize'));
+    vi.advanceTimersByTime(250);
+
+    expect(cb).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+});
+
+// ref name escaping
+
+describe('ref name escaping', () => {
+  it('matches ref names containing CSS-significant characters', async () => {
+    let capturedRef!: (name: string) => Element | null;
+    sys.register('foo', { init: ctx => { capturedRef = ctx.ref; } });
+
+    const wrapper = addComponent('foo');
+    const odd = addRef(wrapper, 'we"ird]name');
+
+    await sys.scan();
+
+    expect(capturedRef('we"ird]name')).toBe(odd);
+    expect(capturedRef('nope"nope')).toBeNull(); // no throw, no match
   });
 });

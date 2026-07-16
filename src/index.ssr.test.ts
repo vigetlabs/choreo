@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
-import { defineComponent, ComponentSystem } from './index';
+import { defineComponent, Choreo } from './index';
 
 describe('defineComponent (SSR / no window)', () => {
   it('is a no-op and does not throw when window is undefined', () => {
@@ -11,6 +11,6 @@ describe('defineComponent (SSR / no window)', () => {
   it('importing the entry does not construct the singleton', () => {
     // Module was imported at the top of this file in a windowless
     // environment — reaching this line proves construction is lazy.
-    expect(typeof ComponentSystem).toBe('function');
+    expect(typeof Choreo).toBe('function');
   });
 });

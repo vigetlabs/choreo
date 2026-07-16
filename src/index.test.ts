@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
-import { defineComponent, ComponentSystem } from './index';
+import { defineComponent, Choreo } from './index';
 
 beforeAll(() => {
   Object.defineProperty(window, 'matchMedia', {
@@ -16,9 +16,9 @@ beforeAll(() => {
 
 describe('defineComponent (browser)', () => {
   it('lazily creates the singleton and exposes it on window in dev', () => {
-    expect(window.__componentSystem).toBeUndefined();
+    expect(window.__choreo).toBeUndefined();
     defineComponent('thing', { init: vi.fn() });
-    expect(window.__componentSystem).toBeInstanceOf(ComponentSystem);
+    expect(window.__choreo).toBeInstanceOf(Choreo);
   });
 
   it('registers definitions on the shared singleton', async () => {
@@ -29,13 +29,13 @@ describe('defineComponent (browser)', () => {
     el.setAttribute('data-component', 'widget');
     document.body.appendChild(el);
 
-    await window.__componentSystem!.scan();
+    await window.__choreo!.scan();
     expect(init).toHaveBeenCalledOnce();
   });
 
   it('reuses the same singleton across defineComponent calls', () => {
-    const before = window.__componentSystem;
+    const before = window.__choreo;
     defineComponent('another', { init: vi.fn() });
-    expect(window.__componentSystem).toBe(before);
+    expect(window.__choreo).toBe(before);
   });
 });

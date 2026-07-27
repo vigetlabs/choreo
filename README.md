@@ -1,8 +1,12 @@
-# Choreo
+<div align="center">
 
-A minimal, library-agnostic, component choreography layer for [Astro](https://astro.build) projects, focused on motion and interactive components.
+![Choreo](.github/assets/choreo-static.png 'Choreo')
 
-Choreo handle the coordination, initialization, and cleanup of components so authors can focus on interaction.
+**Choreo** is a minimal, library-agnostic, component choreography layer for [Astro](https://astro.build) projects, focused on motion and interactive components.
+
+</div>
+
+---
 
 - **Automatic DOM detection** via `data-component` attributes
 - **Dependency-ordered initialization** using Kahn's topological sort (BFS)
@@ -199,8 +203,3 @@ Lightweight provisions have been made for code assistants for future feature dev
 |-------|----------|
 | `CLAUDE.md` | Automatically read by Claude, points to context and sets boundaries |
 | `CONTEXT.md` | Living reference for AI agents to supply commands, architecture, and reasoning for future sessions |
-
-## License
-
-[MIT](./LICENSE) © Viget Labs, LLC
-

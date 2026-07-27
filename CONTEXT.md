@@ -1,4 +1,4 @@
-# CONTEXT.md — Choreo
+# CONTEXT — Choreo
 
 > Living reference for AI sessions and future development. **Update this file whenever
 > the system, decisions, or workflows change.** Last updated: 2026-07-16.

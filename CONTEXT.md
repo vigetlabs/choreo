@@ -89,10 +89,14 @@ npm pack --dry-run  # verify publish payload: LICENSE, README, package.json,
 - **Published: `@viget/choreo@0.1.0`** (2026-07-27), `latest`, maintainer
   `viget <fed@viget.com>`. `publishConfig.access: public` is set (scoped packages
   default private). Installs also work from a GitHub URL since there's no build step.
-- **Remote: `github.com/vigetlabs/choreo`** (`origin`, SSH). Note the mismatch — npm
-  scope is `@viget`, GitHub org is `vigetlabs`. Trusted-publisher config and any CI
-  reference must use **`vigetlabs/choreo`**.
-- Version `0.1.0`, MIT (LICENSE file present, © Viget Labs, LLC).
+- Version `0.1.1` in `package.json`, MIT (LICENSE file present, © Viget Labs, LLC).
+  0.1.1 is **not yet on the registry** — its first staging attempt failed (see below).
+- **`repository.url` must match the building repo exactly.** Provenance embeds
+  `GITHUB_REPOSITORY`; if `package.json` disagrees npm rejects the stage with
+  `E422 ... Failed to validate repository information`. This bit v0.1.1 (`viget/choreo`
+  vs `vigetlabs/choreo`) *after* the tarball was signed and logged to sigstore.
+  Deliberately **not** guarded in CI — the registry check is authoritative, names both
+  values, and fires before anything is staged; a local copy would only duplicate it.
 
 ## Releasing
 
@@ -100,6 +104,10 @@ npm pack --dry-run  # verify publish payload: LICENSE, README, package.json,
 it does not publish. Flow: checkout → Node (from `.tool-versions`) → `npm i -g npm@^12`
 → `npm ci` → tag/version guard → typecheck → test → `npm pack --dry-run` →
 `npm stage publish`. The staged id is written to the job summary.
+
+**Verified working 2026-07-31**: OIDC trusted publishing authenticates `npm stage
+publish`, and provenance is signed and written to the sigstore transparency log
+automatically — no `--provenance` flag needed.
 
 Nothing is installable until a maintainer approves with 2FA:
 

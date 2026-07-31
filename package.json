@@ -7,11 +7,11 @@
   "author": "Viget (https://www.viget.com)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/viget/choreo.git"
+    "url": "git+https://github.com/vigetlabs/choreo.git"
   },
-  "homepage": "https://github.com/viget/choreo#readme",
+  "homepage": "https://github.com/vigetlabs/choreo#readme",
   "bugs": {
-    "url": "https://github.com/viget/choreo/issues"
+    "url": "https://github.com/vigetlabs/choreo/issues"
   },
   "exports": {
     ".": "./src/index.ts"

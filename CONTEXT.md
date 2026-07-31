@@ -23,6 +23,7 @@ view transitions, unload), and handles cleanup.
 | `src/index.test.ts` / `src/index.ssr.test.ts` | Singleton behavior; SSR no-op (node environment). |
 | `README.md` | User-facing docs — keep in sync with behavior changes. |
 | `.github/workflows/release.yml` | Tag-triggered staged npm release (see Releasing). |
+| `.github/workflows/check-workflows.yml` | zizmor lint of the workflows themselves. |
 | `.tool-versions` | asdf pin: `nodejs 26.5.1`. Also read by CI via `node-version-file`. |
 
 ## Commands
@@ -138,6 +139,13 @@ Decisions behind it:
   `permissions: {}`. No third-party actions in the job that holds publishing rights.
 - **No build step to guard** — the tarball is just `src/` (see Key design decisions),
   so there's no build-then-publish gap for an attacker to slip into.
+- **No dependency cache** (`package-manager-cache: false`). setup-node v7 auto-caches
+  by default; a poisoned cache entry could reach the tarball, and restoring 85 packages
+  from the registry costs seconds. Also clears zizmor's `cache-poisoning` finding.
+- **One zizmor suppression**: `adhoc-packages` on the npm 12 install. That audit is
+  only cleared by a lockfile install, and npm 12 must exist before `npm ci` runs. Its
+  rationale (unpinned sub-dependencies) doesn't apply — npm ships all 68 of its deps
+  as `bundleDependencies`, so the install is one integrity-checked tarball.
 - Tag must equal `package.json` version (`v0.1.0` ↔ `0.1.0`); CI fails otherwise.
 
 ## Open questions / possible future work

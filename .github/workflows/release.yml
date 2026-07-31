@@ -30,11 +30,17 @@ jobs:
         with:
           node-version-file: .tool-versions
           registry-url: https://registry.npmjs.org
+          # No dependency cache in the job that holds publishing rights — a poisoned
+          # cache entry could reach the tarball. The tree is 85 packages; restoring
+          # it from the registry costs seconds.
+          package-manager-cache: false
 
-      # Node 24/26 bundle npm 11.x, which has no `stage` command. Pin the major so
-      # a future npm 13 cannot change publish semantics without an explicit bump.
+      # @TODO: Remove npm 12 install when we can ensure it exists in the bundle
+      # since we're relying on npm stage (v12+ only) zizmor's adhoc-packages
+      # audit cannot be satisfied here: it is only cleared by a lockfile
+      # install, and npm 12 must exist *before* `npm ci` runs.
       - name: Install npm 12 (staged publishing)
-        run: npm install --global npm@^12.0.2
+        run: npm install --global npm@^12.0.2 # zizmor: ignore[adhoc-packages] npm bundles its deps
 
       # Deliberately after the npm 12 upgrade: npm 12 defaults allowScripts off and
       # --allow-git/--allow-remote to none, so no dependency lifecycle script can run

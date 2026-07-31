@@ -1,6 +1,6 @@
 {
   "name": "@viget/choreo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Choreo — minimal, library-agnostic component orchestration for Astro: automatic DOM detection, dependency-ordered initialization, global event coordination, and cleanup.",
   "type": "module",
   "license": "MIT",

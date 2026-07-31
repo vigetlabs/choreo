@@ -1,0 +1,95 @@
+name: Release
+
+# Staged publishing: pushing a vX.Y.Z tag uploads the tarball to npm's holding
+# area via OIDC trusted publishing. It is NOT installable until a maintainer runs
+# `npm stage approve <id>` locally with 2FA. See the job summary for the id.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Default to no permissions; grant per-job.
+permissions: {}
+
+jobs:
+  stage:
+    name: Test and stage npm release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC trusted publishing
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .tool-versions
+          registry-url: https://registry.npmjs.org
+
+      # Node 24/26 bundle npm 11.x, which has no `stage` command. Pin the major so
+      # a future npm 13 cannot change publish semantics without an explicit bump.
+      - name: Install npm 12 (staged publishing)
+        run: npm install --global npm@^12.0.2
+
+      # Deliberately after the npm 12 upgrade: npm 12 defaults allowScripts off and
+      # --allow-git/--allow-remote to none, so no dependency lifecycle script can run
+      # in the job holding publishing rights. Verified safe — every dep resolves to
+      # registry.npmjs.org, and the only package with an install script is fsevents
+      # (optional, darwin-only), which is never installed on ubuntu-latest.
+      # If this ever fails on a blocked script, audit the package before allowing it.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          pkg_version="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$pkg_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg_version"
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches package.json."
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # No build step: the package ships raw .ts from src/ (see CONTEXT.md).
+      - name: Verify publish payload
+        run: npm pack --dry-run
+
+      - name: Stage publish
+        shell: bash
+        run: npm stage publish 2>&1 | tee stage.log
+
+      - name: Report staged version
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Staged \`$GITHUB_REF_NAME\`"
+            echo
+            if [ -s stage.log ]; then
+              echo '```'
+              cat stage.log
+              echo '```'
+            else
+              echo "No staging output captured — the publish step did not complete."
+            fi
+            echo
+            echo "This version is **not installable** until approved with 2FA:"
+            echo
+            echo '```sh'
+            echo "npm stage list"
+            echo "npm stage view <id>      # inspect before approving"
+            echo "npm stage approve <id>   # publishes; requires 2FA"
+            echo "npm stage reject <id>    # discards"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

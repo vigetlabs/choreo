@@ -57,7 +57,7 @@ Intended for use in any Vite-based site; Astro's `<ClientRouter />` view transit
 This shows a simple example of setting up a component and invoking Choreo.
 
 1. Each component is identified with a `data-component` and a unique name
-2. (Optional) Child elements that will be needed later are marked with `data-ref` and a unique name, accessed via the `ref()` helper later.
+2. (Optional) Child elements that will be needed later are marked with `data-ref` and a name, accessed via the `ref()` (single) or `refAll()` (series) helper later.
 3. The co-located `<script>` tag imports Choreo and uses the wrapping `defineComponent()` function and the name of the component to attach to (ex. `accordion`).
 4. Runtime logic lives in the `init()` function, which receives commonly needed info from Choreo (see Component Context).
 
@@ -79,8 +79,9 @@ import { defineComponent } from '@viget/choreo';
 
 defineComponent('hero', {
   deps: ['nav'],  // optional — wait for 'nav' instances to finish init
-  init({ find, findAll, ref, ac, system, viewport, prefersReducedMotion, log }) {
+  init({ find, findAll, ref, refAll, ac, system, viewport, prefersReducedMotion, log }) {
     const title   = ref<HTMLElement>('title');
+    const cards   = refAll<HTMLElement>('card');   // every [data-ref="card"]
     const buttons = findAll<HTMLButtonElement>('.btn');
 
     log('init', { viewport, prefersReducedMotion });
@@ -115,7 +116,8 @@ Each `init()` call receives:
 | `ac` | `AbortController` | System-managed controller — aborted on destroy |
 | `find` | `<T extends Element>(selector: string) => T \| null` | `querySelector` scoped to `element` |
 | `findAll` | `<T extends Element>(selector: string) => T[]` | `querySelectorAll` scoped to `element`, returns an array |
-| `ref` | `<T extends Element>(name: string) => T \| null` | Finds `[data-ref="name"]` within `element` |
+| `ref` | `<T extends Element>(name: string) => T \| null` | Finds `[data-ref="name"]` within `element` (descendant-only)|
+| `refAll` | `<T extends Element>(name: string) => T[]` | Finds every `[data-ref="name"]` within `element`, in document order (descendant-only) |
 | `log` | `(msg: string, ...args: unknown[]) => void` | Dev-only logger prefixed with the component name |
 
 ### `system.on(event, callback, options?)` / `system.off(event, callback)`
@@ -181,6 +183,11 @@ The `log` context helper prefixes output with the component name, and is a no-op
 
 ```
 [hero] init { width: 1440, height: 900 }
+```
+
+`ref()` and `refAll()` also warn in dev when a component asks for a ref name its own root element carries. Refs are descendant-only, use `element` instead if you want the component root element.
+```
+[accordion] ref('root') skips the component element, which carries data-ref="root" — refs match descendants only. Use `element` for the root.
 ```
 
 ## Development

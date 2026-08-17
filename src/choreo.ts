@@ -12,6 +12,7 @@ export interface ComponentContext {
   find: <T extends Element>(selector: string) => T | null;
   findAll: <T extends Element>(selector: string) => T[];
   ref: <T extends Element>(name: string) => T | null;
+  refAll: <T extends Element>(name: string) => T[];
   log: (msg: string, ...args: unknown[]) => void;
 }
 
@@ -35,6 +36,28 @@ interface Instance {
   element: HTMLElement;
   ac: AbortController;
   cleanup: CleanupFn | undefined;
+}
+
+// Every descendant [data-ref="refName"] of root, in document order — backs both
+// ref and refAll. Compares attribute values instead of interpolating refName
+// into a selector, which throws or silently matches the wrong element.
+function collectRefs<T extends Element>(root: HTMLElement, refName: string): T[] {
+  const found: T[] = [];
+  for (const el of root.querySelectorAll<T>('[data-ref]')) {
+    if (el.getAttribute('data-ref') === refName) found.push(el);
+  }
+  return found;
+}
+
+// Flags a data-ref on the component's own root, which refs never match.
+// Callers gate this on import.meta.env.DEV so it drops out of production.
+function warnRootRef(name: string, element: HTMLElement, refName: string, helper: string): void {
+  if (element.getAttribute('data-ref') !== refName) return;
+  console.warn(
+    `[${name}] ${helper}('${refName}') skips the component element, which carries ` +
+      `data-ref="${refName}" — refs match descendants only. Use \`element\` for the root.`,
+    element,
+  );
 }
 
 export class Choreo {
@@ -234,13 +257,15 @@ export class Choreo {
       find: <T extends Element>(selector: string) => element.querySelector<T>(selector),
       findAll: <T extends Element>(selector: string) =>
         Array.from(element.querySelectorAll<T>(selector)),
-      // Exact attribute comparison instead of selector interpolation — a ref
-      // name containing CSS-significant characters can't break the query.
-      ref: <T extends Element>(refName: string) => {
-        for (const el of element.querySelectorAll<T>('[data-ref]')) {
-          if (el.getAttribute('data-ref') === refName) return el;
-        }
-        return null;
+      // `[0]` types as T (noUncheckedIndexedAccess is off) but is undefined at
+      // runtime on an empty array.
+      ref: <T extends Element>(refName: string): T | null => {
+        if (import.meta.env.DEV) warnRootRef(name, element, refName, 'ref');
+        return collectRefs<T>(element, refName)[0] ?? null;
+      },
+      refAll: <T extends Element>(refName: string) => {
+        if (import.meta.env.DEV) warnRootRef(name, element, refName, 'refAll');
+        return collectRefs<T>(element, refName);
       },
       log: import.meta.env.DEV
         ? (msg: string, ...args: unknown[]) =>

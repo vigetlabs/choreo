@@ -2,7 +2,7 @@
 
 > Concise, living reference for AI sessions and future development. **Update
 > this file whenever the system, decisions, or workflows change.** Last
-> updated: 2026-07-31.
+> updated: 2026-08-17.
 
 ## What this is
 
@@ -16,7 +16,7 @@ view transitions, unload), and handles cleanup.
 
 | Path | Purpose |
 |------|---------|
-| `src/choreo.ts` | `Choreo` class — the entire runtime (~330 lines). All types exported here. |
+| `src/choreo.ts` | `Choreo` class — the entire runtime (~360 lines). All types exported here. |
 | `src/index.ts` | Package entry: lazy singleton, `defineComponent()`, re-exports. SSR-safe (no-op without `window`). |
 | `src/env.d.ts` | Minimal `import.meta.env` typing (avoids a vite/client dependency). |
 | `src/choreo.test.ts` | Full system test suite (happy-dom). |
@@ -29,7 +29,7 @@ view transitions, unload), and handles cleanup.
 ## Commands
 
 ```sh
-npm test            # vitest run (61 tests, happy-dom)
+npm test            # vitest run (75 tests, happy-dom)
 npm run typecheck   # tsc --noEmit (strict)
 npm pack --dry-run  # verify publish payload: LICENSE, README, package.json,
                     # src/choreo.ts, src/env.d.ts, src/index.ts — tests excluded
@@ -60,15 +60,37 @@ npm pack --dry-run  # verify publish payload: LICENSE, README, package.json,
 - **Error isolation everywhere**: failing `init()`, cleanup fns, and event subscribers
   are caught + `console.warn`'d with a `[choreo]` prefix; dependents still unblock.
   Event-handler-triggered scans catch rejections (`[choreo] scan failed`).
-- **`ref()` compares attribute values directly** (no selector interpolation) — immune
-  to CSS-significant characters and happy-dom parser limits.
+- **`ref`/`refAll` never interpolate the name into a selector** — the rest of the ref
+  implementation follows from this. `[data-ref="${name}"]` fails two ways under happy-dom:
+  `we"ird]name` throws, and `a"], [data-ref="ok` builds a valid *selector list* that
+  silently returns the element named `ok`. Escaping doesn't rescue it — happy-dom rejects
+  escaped attribute selectors, so that variant is untestable here. `getAttribute(...) ===
+  name` has no grammar, so any string is a valid ref name. `find`/`findAll` pass selectors
+  through because there the parameter *is* the query; `ref(name)` takes a value, and
+  splicing a value into a grammar is the bug parameterized queries exist to prevent.
+- **`ref`/`refAll` share one collector** (`collectRefs`; `ref` is
+  `collectRefs(...)[0] ?? null`) — the lookup must be a loop, and one loop beats two
+  copies of the comparison rule. Cost: `ref` has no early return; a `first` flag would
+  restore it but only saves the comparison tail, since `querySelectorAll` materializes a
+  static NodeList regardless. `ref` needs an explicit `T | null` annotation —
+  `noUncheckedIndexedAccess` is off, so `[0]` types as `T` but is `undefined` at runtime.
+- **All four helpers are descendant-only** — one scoping rule; `element` is the way to the
+  root. Self-inclusive refs shipped and were reverted (2026-08-17): no capability gained,
+  at the cost of an asymmetry with `find`/`findAll`, a `root as unknown as T` cast, a
+  "root first" ordering clause, and a container silently joining its own children in
+  `refAll('item')`.
+- **`warnRootRef` (dev-only)** replaces it — a root `data-ref` failing *silently* was the
+  real complaint, and a warning fixes that without a semantic exception while teaching
+  `element`. Fires whenever the root carries the requested name, including when
+  descendants matched; call-site gated on literal `import.meta.env.DEV`.
 - **`system.on()` with an already-aborted signal never subscribes** — matches DOM
   `addEventListener` semantics.
 - **Resize is a trailing debounce (250ms)**, not a throttle — docs say "debounced".
 - **Naming**: user-visible branding is Choreo (`window.__choreo`, `[choreo]` prefixes,
   class `Choreo`). Method and context-property names were deliberately kept from the
   original system (`defineComponent`, `scan`, `destroy`, `dispose`, `on/off`, ctx:
-  `element/viewport/prefersReducedMotion/system/ac/find/findAll/ref/log`).
+  `element/viewport/prefersReducedMotion/system/ac/find/findAll/ref/log`). `refAll`
+  (2026-08-17) extends that vocabulary rather than adding a second pluralization rule.
 
 ## Testing gotchas (happy-dom)
 
@@ -78,8 +100,8 @@ npm pack --dry-run  # verify publish payload: LICENSE, README, package.json,
 - `matchMedia` must be stubbed (see `beforeEach` in test files).
 - `PageTransitionEvent` constructor ignores `persisted` — tests stamp the flag onto a
   plain `Event` via `Object.defineProperty` (see `pagehideEvent` helper).
-- Selector parser rejects escaped characters in attribute selectors (why `ref()`
-  avoids selector interpolation).
+- Selector parser rejects escaped characters in attribute selectors, so an escaped
+  `[data-ref="…"]` query is untestable here (see ref interpolation, above).
 - Tests create fresh `new Choreo()` instances and `dispose()` in `afterEach` to avoid
   ghost global listeners. `dispose()` is test-only full teardown; `destroy()` is the
   runtime instance-cleanup used between page loads.
@@ -160,5 +182,7 @@ Decisions behind it:
 
 - True throttle option for resize (current debounce emits nothing during a
   continuous drag until it settles).
-- `find`/`findAll`/`ref` don't stop at nested `data-component` boundaries — a parent
-  can grab a child component's refs. Accepted convention for now; document if it bites.
+- `find`/`findAll`/`ref`/`refAll` don't stop at nested `data-component` boundaries — a
+  parent can grab a child component's refs. Accepted for consistency with `findAll` over
+  an ancestor walk per candidate; `refAll` sharpens it (a too-long list fails more quietly
+  than a single wrong element). Pinned by a test — changing it changes all four helpers.

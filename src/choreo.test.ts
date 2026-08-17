@@ -264,6 +264,7 @@ describe('Context values', () => {
       find: unknown;
       findAll: unknown;
       ref: unknown;
+      refAll: unknown;
       log: unknown;
       system: Choreo;
     };
@@ -275,6 +276,7 @@ describe('Context values', () => {
     expect(typeof ctx.find).toBe('function');
     expect(typeof ctx.findAll).toBe('function');
     expect(typeof ctx.ref).toBe('function');
+    expect(typeof ctx.refAll).toBe('function');
     expect(typeof ctx.log).toBe('function');
     expect(ctx.system).toBe(sys);
   });
@@ -716,6 +718,200 @@ describe('ref', () => {
 
     expect(capturedRef('panel')).toBeNull(); // not found inside component
   });
+
+  it('does not match a [data-ref] on the component element itself', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRef!: (name: string) => Element | null;
+    sys.register('foo', { init: ctx => { capturedRef = ctx.ref; } });
+
+    const wrapper = addComponent('foo');
+    wrapper.setAttribute('data-ref', 'root');
+
+    await sys.scan();
+
+    expect(capturedRef('root')).toBeNull();
+    warnSpy.mockRestore();
+  });
+
+  it('returns the descendant when the component element shares the ref name', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRef!: (name: string) => Element | null;
+    sys.register('foo', { init: ctx => { capturedRef = ctx.ref; } });
+
+    const wrapper = addComponent('foo');
+    wrapper.setAttribute('data-ref', 'panel');
+    const child = addRef(wrapper, 'panel');
+
+    await sys.scan();
+
+    expect(capturedRef('panel')).toBe(child);
+    warnSpy.mockRestore();
+  });
+});
+
+// refAll
+
+describe('refAll', () => {
+  it('returns every matching ref in document order', async () => {
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('foo', { init: ctx => { capturedRefAll = ctx.refAll; } });
+
+    const wrapper = addComponent('foo');
+    const first = addRef(wrapper, 'item');
+    addRef(wrapper, 'other');
+    const second = addRef(wrapper, 'item');
+    const third = addRef(wrapper, 'item');
+
+    await sys.scan();
+
+    expect(capturedRefAll('item')).toEqual([first, second, third]);
+  });
+
+  it('excludes the component element itself', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('foo', { init: ctx => { capturedRefAll = ctx.refAll; } });
+
+    const wrapper = addComponent('foo');
+    wrapper.setAttribute('data-ref', 'item');
+    const child = addRef(wrapper, 'item');
+
+    await sys.scan();
+
+    expect(capturedRefAll('item')).toEqual([child]);
+    warnSpy.mockRestore();
+  });
+
+  it('returns an empty array for a ref that does not exist', async () => {
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('foo', { init: ctx => { capturedRefAll = ctx.refAll; } });
+    addComponent('foo');
+    await sys.scan();
+    expect(capturedRefAll('ghost')).toEqual([]);
+  });
+
+  it('returns an array (not NodeList)', async () => {
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('foo', { init: ctx => { capturedRefAll = ctx.refAll; } });
+    addComponent('foo');
+    await sys.scan();
+    expect(Array.isArray(capturedRefAll('ghost'))).toBe(true);
+  });
+
+  it('is scoped to the component element, not the whole document', async () => {
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('foo', { init: ctx => { capturedRefAll = ctx.refAll; } });
+
+    const wrapper = addComponent('foo');
+    const inside = addRef(wrapper, 'item');
+    addRef(document.body, 'item'); // same name, outside the component
+
+    await sys.scan();
+
+    expect(capturedRefAll('item')).toEqual([inside]);
+  });
+
+  it('reaches into nested components (accepted convention, matches findAll)', async () => {
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('gallery', { init: ctx => { capturedRefAll = ctx.refAll; } });
+    sys.register('carousel', { init: () => {} });
+
+    const gallery = addComponent('gallery');
+    const own = addRef(gallery, 'item');
+    const carousel = addComponent('carousel', gallery);
+    const nested = addRef(carousel, 'item');
+
+    await sys.scan();
+
+    expect(capturedRefAll('item')).toEqual([own, nested]);
+  });
+});
+
+// data-ref on the component root (dev warning)
+
+describe('root data-ref warning', () => {
+  it('warns when ref() asks for a name the component element carries', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRef!: (name: string) => Element | null;
+    sys.register('accordion', { init: ctx => { capturedRef = ctx.ref; } });
+
+    const wrapper = addComponent('accordion');
+    wrapper.setAttribute('data-ref', 'root');
+
+    await sys.scan();
+    capturedRef('root');
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[accordion] ref('root') skips the component element"),
+      wrapper,
+    );
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('Use `element`');
+    warnSpy.mockRestore();
+  });
+
+  it('warns from refAll() too, naming the helper that was called', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('gallery', { init: ctx => { capturedRefAll = ctx.refAll; } });
+
+    const wrapper = addComponent('gallery');
+    wrapper.setAttribute('data-ref', 'item');
+
+    await sys.scan();
+    capturedRefAll('item');
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[gallery] refAll('item') skips the component element"),
+      wrapper,
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('warns even when descendants matched — the root is still being skipped', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('gallery', { init: ctx => { capturedRefAll = ctx.refAll; } });
+
+    const wrapper = addComponent('gallery');
+    wrapper.setAttribute('data-ref', 'item');
+    addRef(wrapper, 'item');
+
+    await sys.scan();
+
+    expect(capturedRefAll('item')).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
+  });
+
+  it('stays silent for an ordinary miss', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRef!: (name: string) => Element | null;
+    sys.register('foo', { init: ctx => { capturedRef = ctx.ref; } });
+
+    const wrapper = addComponent('foo');
+    wrapper.setAttribute('data-ref', 'root');
+
+    await sys.scan();
+    capturedRef('ghost'); // different name — nothing to nudge about
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('stays silent when the component element has no data-ref', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let capturedRef!: (name: string) => Element | null;
+    sys.register('foo', { init: ctx => { capturedRef = ctx.ref; } });
+
+    const wrapper = addComponent('foo');
+    const trigger = addRef(wrapper, 'trigger');
+
+    await sys.scan();
+
+    expect(capturedRef('trigger')).toBe(trigger);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 // log
@@ -954,5 +1150,23 @@ describe('ref name escaping', () => {
 
     expect(capturedRef('we"ird]name')).toBe(odd);
     expect(capturedRef('nope"nope')).toBeNull(); // no throw, no match
+  });
+
+  it('does not let a ref name smuggle in a second selector', async () => {
+    let capturedRef!: (name: string) => Element | null;
+    let capturedRefAll!: (name: string) => Element[];
+    sys.register('foo', {
+      init: ctx => { capturedRef = ctx.ref; capturedRefAll = ctx.refAll; },
+    });
+
+    const wrapper = addComponent('foo');
+    addRef(wrapper, 'ok');
+
+    await sys.scan();
+
+    // Interpolated, this name would build the selector list
+    // [data-ref="a"], [data-ref="ok"] and return the element named 'ok'.
+    expect(capturedRef('a"], [data-ref="ok')).toBeNull();
+    expect(capturedRefAll('a"], [data-ref="ok')).toEqual([]);
   });
 });

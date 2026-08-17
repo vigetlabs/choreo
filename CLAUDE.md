@@ -1,6 +1,8 @@
 # Choreo
 
-Read [CONTEXT.md](CONTEXT.md) for reference before making changes.
+- Read [CONTEXT.md](CONTEXT.md), a concise agent-focused document, for reference before making changes.
+- Keep reasoning out of comment blocks and keep comments focused only on what they label
+
 
 ## Boundaries
 

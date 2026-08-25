@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Choreo, type CleanupFn } from './choreo';
+import {
+  Choreo,
+  type CleanupFn,
+  type GlobalContext,
+  type Viewport,
+} from './choreo';
 
 // Helpers
 
@@ -1168,5 +1173,375 @@ describe('ref name escaping', () => {
     // [data-ref="a"], [data-ref="ok"] and return the element named 'ok'.
     expect(capturedRef('a"], [data-ref="ok')).toBeNull();
     expect(capturedRefAll('a"], [data-ref="ok')).toEqual([]);
+  });
+});
+
+// Globals
+
+type InstanceView = { name: string; element: HTMLElement | null };
+
+function instancesOf(s: Choreo): InstanceView[] {
+  return (s as unknown as { instances: InstanceView[] }).instances;
+}
+
+describe('global registration', () => {
+  it('initializes with no [data-component] elements in the document', async () => {
+    const init = vi.fn();
+    sys.registerGlobal('smooth-scroll', { init });
+
+    await sys.scan();
+
+    expect(init).toHaveBeenCalledOnce();
+  });
+
+  it('a page with registered components but no matching elements scans clean', async () => {
+    const init = vi.fn();
+    sys.register('absent', { init });
+
+    await expect(sys.scan()).resolves.toBeUndefined();
+    expect(init).not.toHaveBeenCalled();
+  });
+
+  it('initializes exactly once across repeated scans', async () => {
+    const init = vi.fn();
+    sys.registerGlobal('once', { init });
+
+    await sys.scan();
+    await sys.scan();
+    await sys.scan();
+
+    expect(init).toHaveBeenCalledOnce();
+  });
+
+  it('re-initializes after destroy()', async () => {
+    const init = vi.fn();
+    sys.registerGlobal('again', { init });
+
+    await sys.scan();
+    sys.destroy();
+    await sys.scan();
+
+    expect(init).toHaveBeenCalledTimes(2);
+  });
+
+  it('a global and a dep-free component both initialize in one scan', async () => {
+    const globalInit = vi.fn();
+    const componentInit = vi.fn();
+    sys.registerGlobal('ticker', { init: globalInit });
+    sys.register('card', { init: componentInit });
+    addComponent('card');
+
+    await sys.scan();
+
+    expect(globalInit).toHaveBeenCalledOnce();
+    expect(componentInit).toHaveBeenCalledOnce();
+  });
+
+  it('is not matched by a [data-component] element of the same name', async () => {
+    const init = vi.fn();
+    sys.registerGlobal('scroll', { init });
+    addComponent('scroll');
+    addComponent('scroll');
+
+    await sys.scan();
+
+    expect(init).toHaveBeenCalledOnce();
+    expect(instancesOf(sys)).toHaveLength(1);
+  });
+
+  it('records one instance with a null element', async () => {
+    sys.registerGlobal('scroll', { init: vi.fn() });
+
+    await sys.scan();
+
+    expect(instancesOf(sys)).toEqual([
+      expect.objectContaining({ name: 'scroll', element: null }),
+    ]);
+  });
+});
+
+describe('global context', () => {
+  it('provides viewport, prefersReducedMotion, system, ac and log', async () => {
+    let ctx!: GlobalContext;
+    sys.registerGlobal('probe', { init: c => { ctx = c; } });
+
+    await sys.scan();
+
+    expect(ctx.viewport).toEqual({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
+    expect(ctx.prefersReducedMotion).toBe(false);
+    expect(ctx.system).toBe(sys);
+    expect(ctx.ac).toBeInstanceOf(AbortController);
+    expect(typeof ctx.log).toBe('function');
+  });
+
+  it('omits the element-scoped helpers at runtime, not only in types', async () => {
+    let ctx!: GlobalContext;
+    sys.registerGlobal('probe', { init: c => { ctx = c; } });
+
+    await sys.scan();
+
+    for (const key of ['element', 'find', 'findAll', 'ref', 'refAll']) {
+      expect(key in ctx).toBe(false);
+    }
+  });
+
+  it('log prefixes the name and appends no element', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    sys.registerGlobal('scroll', { init: ({ log }) => { log('ready', 1); } });
+
+    await sys.scan();
+
+    expect(logSpy).toHaveBeenCalledWith('[scroll] ready', 1);
+    logSpy.mockRestore();
+  });
+
+  it('viewport is the same live object components receive', async () => {
+    let globalViewport!: Readonly<Viewport>;
+    let componentViewport!: Readonly<Viewport>;
+    sys.registerGlobal('scroll', { init: ({ viewport }) => { globalViewport = viewport; } });
+    sys.register('card', { init: ({ viewport }) => { componentViewport = viewport; } });
+    addComponent('card');
+
+    await sys.scan();
+
+    expect(globalViewport).toBe(componentViewport);
+  });
+});
+
+describe('global ordering', () => {
+  it('a component that deps on a global initializes after it', async () => {
+    const order: string[] = [];
+    sys.registerGlobal('scroll', { init: () => { order.push('scroll'); } });
+    sys.register('hero', { deps: ['scroll'], init: () => { order.push('hero'); } });
+    addComponent('hero');
+
+    await sys.scan();
+
+    expect(order).toEqual(['scroll', 'hero']);
+  });
+
+  it('an async global blocks the dependent wave from starting', async () => {
+    const order: string[] = [];
+    let resolveScroll!: () => void;
+
+    sys.registerGlobal('scroll', {
+      init: () =>
+        new Promise<void>(resolve => { resolveScroll = resolve; })
+          .then(() => { order.push('scroll'); }),
+    });
+    sys.register('hero', { deps: ['scroll'], init: () => { order.push('hero'); } });
+    addComponent('hero');
+
+    const scanPromise = sys.scan();
+
+    expect(order).toEqual([]);
+
+    resolveScroll();
+    await scanPromise;
+
+    expect(order).toEqual(['scroll', 'hero']);
+  });
+
+  it('a global that deps on a component waits for it when present', async () => {
+    const order: string[] = [];
+    sys.register('nav', { init: () => { order.push('nav'); } });
+    sys.registerGlobal('scroll', { deps: ['nav'], init: () => { order.push('scroll'); } });
+    addComponent('nav');
+
+    await sys.scan();
+
+    expect(order).toEqual(['nav', 'scroll']);
+  });
+
+  it('a global that deps on an absent component initializes without blocking', async () => {
+    const init = vi.fn();
+    sys.register('nav', { init: vi.fn() });
+    sys.registerGlobal('scroll', { deps: ['nav'], init });
+
+    await sys.scan();
+
+    expect(init).toHaveBeenCalledOnce();
+  });
+
+  it('a later scan does not block a component whose global dep is already live', async () => {
+    const order: string[] = [];
+    sys.registerGlobal('scroll', { init: () => { order.push('scroll'); } });
+    await sys.scan();
+
+    sys.register('hero', { deps: ['scroll'], init: () => { order.push('hero'); } });
+    addComponent('hero');
+    await sys.scan();
+
+    expect(order).toEqual(['scroll', 'hero']);
+  });
+
+  it('a cycle between two globals throws naming both', async () => {
+    sys.registerGlobal('a', { deps: ['b'], init: vi.fn() });
+    sys.registerGlobal('b', { deps: ['a'], init: vi.fn() });
+
+    await expect(sys.scan()).rejects.toThrow(
+      'Circular dependency detected among: a, b',
+    );
+  });
+
+  it('a global cycle from astro:page-load logs instead of rejecting unhandled', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sys.registerGlobal('a', { deps: ['b'], init: vi.fn() });
+    sys.registerGlobal('b', { deps: ['a'], init: vi.fn() });
+
+    document.dispatchEvent(new Event('astro:page-load'));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(errorSpy).toHaveBeenCalledWith('[choreo] scan failed', expect.any(Error));
+    errorSpy.mockRestore();
+  });
+});
+
+describe('global lifecycle', () => {
+  it('destroy() aborts the AbortController and runs the cleanup fn', async () => {
+    const cleanup = vi.fn();
+    const onAbort = vi.fn();
+    sys.registerGlobal('scroll', {
+      init: ({ ac }) => {
+        ac.signal.addEventListener('abort', onAbort);
+        return cleanup;
+      },
+    });
+
+    await sys.scan();
+    sys.destroy();
+
+    expect(onAbort).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(instancesOf(sys)).toEqual([]);
+  });
+
+  it('astro:page-load tears the global down and rebuilds it', async () => {
+    const order: string[] = [];
+    sys.registerGlobal('scroll', {
+      init: () => {
+        order.push('init');
+        return () => { order.push('cleanup'); };
+      },
+    });
+
+    await sys.scan();
+    document.dispatchEvent(new Event('astro:page-load'));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(order).toEqual(['init', 'cleanup', 'init']);
+  });
+
+  it('pagehide destroys the global on a real unload (persisted: false)', async () => {
+    const cleanup = vi.fn();
+    sys.registerGlobal('scroll', { init: () => cleanup });
+    await sys.scan();
+
+    window.dispatchEvent(pagehideEvent(false));
+
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('pagehide leaves the global intact for the bfcache (persisted: true)', async () => {
+    const cleanup = vi.fn();
+    sys.registerGlobal('scroll', { init: () => cleanup });
+    await sys.scan();
+
+    window.dispatchEvent(pagehideEvent(true));
+
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('dispose() tears down a live global', async () => {
+    const cleanup = vi.fn();
+    sys.registerGlobal('scroll', { init: () => cleanup });
+    await sys.scan();
+
+    sys.dispose();
+
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('cleanup fn from an async init runs when destroy fires during the await', async () => {
+    const cleanup = vi.fn();
+    let resolveInit!: (fn: CleanupFn) => void;
+
+    sys.registerGlobal('slow', {
+      init: () => new Promise<CleanupFn>(resolve => { resolveInit = resolve; }),
+    });
+
+    void sys.scan();
+    sys.destroy();
+    resolveInit(cleanup);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('one ac.abort() removes both DOM and system listeners', async () => {
+    const onResize = vi.fn();
+    const onClick = vi.fn();
+    sys.registerGlobal('scroll', {
+      init: ({ ac, system }) => {
+        system.on('resize', onResize, { signal: ac.signal });
+        document.body.addEventListener('click', onClick, { signal: ac.signal });
+      },
+    });
+
+    await sys.scan();
+    sys.destroy();
+
+    document.body.dispatchEvent(new Event('click'));
+    window.dispatchEvent(new Event('resize'));
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(onResize).not.toHaveBeenCalled();
+  });
+});
+
+describe('global error resilience', () => {
+  it('a throwing init warns with the global name and does not crash the scan', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const otherInit = vi.fn();
+    sys.registerGlobal('bad', { init: () => { throw new Error('boom'); } });
+    sys.registerGlobal('good', { init: otherInit });
+
+    await expect(sys.scan()).resolves.toBeUndefined();
+
+    expect(warnSpy).toHaveBeenCalledWith("[choreo] global 'bad' init failed");
+    expect(otherInit).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
+  });
+
+  it('a failed global still unblocks its dependents', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const heroInit = vi.fn();
+    sys.registerGlobal('scroll', { init: () => { throw new Error('boom'); } });
+    sys.register('hero', { deps: ['scroll'], init: heroInit });
+    addComponent('hero');
+
+    await sys.scan();
+
+    expect(heroInit).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
+  });
+
+  it('a throwing global cleanup warns and does not block other cleanups', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const otherCleanup = vi.fn();
+    sys.registerGlobal('bad', { init: () => () => { throw new Error('boom'); } });
+    sys.register('good', { init: () => otherCleanup });
+    addComponent('good');
+
+    await sys.scan();
+    sys.destroy();
+
+    expect(warnSpy).toHaveBeenCalledWith("[choreo] global 'bad' cleanup failed");
+    expect(otherCleanup).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
   });
 });

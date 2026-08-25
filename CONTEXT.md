@@ -2,7 +2,7 @@
 
 > Concise, living reference for AI sessions and future development. **Update
 > this file whenever the system, decisions, or workflows change.** Last
-> updated: 2026-08-17.
+> updated: 2026-08-18.
 
 ## What this is
 
@@ -16,8 +16,8 @@ view transitions, unload), and handles cleanup.
 
 | Path | Purpose |
 |------|---------|
-| `src/choreo.ts` | `Choreo` class — the entire runtime (~360 lines). All types exported here. |
-| `src/index.ts` | Package entry: lazy singleton, `defineComponent()`, re-exports. SSR-safe (no-op without `window`). |
+| `src/choreo.ts` | `Choreo` class — the entire runtime (~425 lines). All types exported here. |
+| `src/index.ts` | Package entry: lazy singleton, `defineComponent()`, `defineGlobal()`, re-exports. SSR-safe (no-op without `window`). |
 | `src/env.d.ts` | Minimal `import.meta.env` typing (avoids a vite/client dependency). |
 | `src/choreo.test.ts` | Full system test suite (happy-dom). |
 | `src/index.test.ts` / `src/index.ssr.test.ts` | Singleton behavior; SSR no-op (node environment). |
@@ -29,7 +29,7 @@ view transitions, unload), and handles cleanup.
 ## Commands
 
 ```sh
-npm test            # vitest run (75 tests, happy-dom)
+npm test            # vitest run (105 tests, happy-dom)
 npm run typecheck   # tsc --noEmit (strict)
 npm pack --dry-run  # verify publish payload: LICENSE, README, package.json,
                     # src/choreo.ts, src/env.d.ts, src/index.ts — tests excluded
@@ -86,6 +86,45 @@ npm pack --dry-run  # verify publish payload: LICENSE, README, package.json,
 - **`system.on()` with an already-aborted signal never subscribes** — matches DOM
   `addEventListener` semantics.
 - **Resize is a trailing debounce (250ms)**, not a throttle — docs say "debounced".
+- **Globals are a sibling export (`defineGlobal`), not a flag on `defineComponent`** — a
+  `root: 'document'` option would force `ComponentContext.element` to `HTMLElement | null`
+  for every component already written, to serve the rare case. Registration *is* presence:
+  no element, always in the graph, exactly one instance, same waves, same `destroy()`.
+- **`GlobalContext` is the base interface and `ComponentContext extends` it** — not
+  `Omit<ComponentContext, 'element' | 'find' | …>`. The derived form fails open: a field
+  added to `ComponentContext` lands on globals unless someone remembers the exclusion list,
+  and that list had already gone stale against `refAll` before it shipped. As a base, a new
+  shared field is a deliberate choice of which interface carries it. `ComponentContext`'s
+  public shape is unchanged.
+- **Globals get no `find`/`findAll`/`ref`/`refAll`** — scoped queries against nothing are
+  meaningless, and a document-rooted `ref()` would contradict the descendant-only rule
+  `warnRootRef` exists to teach. Globals use `document` directly. Pinned by a *runtime*
+  test (`'element' in ctx`), since vitest doesn't check the type boundary.
+- **One `definitions` map holding a tagged union** (`{ kind: 'component' | 'global', def }`),
+  not a map plus a `globalNames` marker Set. Both `_computeWaves` and the wave loop look a
+  name up once; a Set doesn't narrow a `ComponentDefinition | GlobalDefinition` value, so
+  the marker approach needs a cast at exactly the call site where confusing the two kinds
+  is the bug. Cross-kind re-registration overwrites silently, like same-kind.
+- **`activeGlobals` is name-keyed, mirroring the element-keyed `active`** — re-scan
+  idempotency for something with no element. Marked *before* the first await in
+  `_initGlobal`, and cleared in `destroy()` alongside `active`.
+- **`scan()` gates on `namesPresent.size > 0`, not `known.length > 0`** — the old guard
+  skipped wave computation entirely on a page carrying a global but no component elements.
+  There was no test for "registered definitions, zero matching elements" at all; there is
+  now.
+- **`_runInit(instance, run)` takes a thunk, not a promise** — `_initInstance` and
+  `_initGlobal` share the await / abort-during-init / try-catch tail, and handing it an
+  already-invoked promise would move *synchronous* init throws outside the catch. Failure
+  warnings go through `warnFailure`, which names the element for components and says
+  `global '<name>'` for globals rather than printing `null`. Component warning strings are
+  byte-identical to before.
+- **Globals are page-scoped, like everything else** — destroyed and rebuilt on
+  `astro:page-load`, which is what fixes the view-transition leak a bare `<script>` has. A
+  `persist: true` flavor is additive later; not built now.
+- **Globals are not "first"** — a dep-free global lands in wave 0 *concurrently* with
+  dep-free components. Ordering is `deps`, never kind. Because a global is always present,
+  a cycle involving one throws on every page instead of only where both elements were in
+  the DOM — louder, and deliberate.
 - **Naming**: user-visible branding is Choreo (`window.__choreo`, `[choreo]` prefixes,
   class `Choreo`). Method and context-property names were deliberately kept from the
   original system (`defineComponent`, `scan`, `destroy`, `dispose`, `on/off`, ctx:
@@ -179,6 +218,11 @@ Decisions behind it:
 - Tag must equal `package.json` version (`v0.1.0` ↔ `0.1.0`); CI fails otherwise.
 
 ## Open questions / possible future work
+
+- `persist: true` for globals (an audio or WebGL context that shouldn't be recreated per
+  navigation). Deferred until the page-scoped flavor has been lived with.
+- No dev warning when a name is registered as both a component and a global — it just
+  overwrites, matching existing duplicate-registration semantics.
 
 - True throttle option for resize (current debounce emits nothing during a
   continuous drag until it settles).

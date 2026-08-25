@@ -3,17 +3,22 @@ export interface Viewport {
   height: number;
 }
 
-export interface ComponentContext {
-  element: HTMLElement;
+export interface GlobalContext {
   viewport: Readonly<Viewport>;
   prefersReducedMotion: boolean;
   system: Choreo;
   ac: AbortController;
+  log: (msg: string, ...args: unknown[]) => void;
+}
+
+// Extends rather than ComponentContext + Omit: a new shared field is then a
+// deliberate choice of which interface carries it, and the two can't drift.
+export interface ComponentContext extends GlobalContext {
+  element: HTMLElement;
   find: <T extends Element>(selector: string) => T | null;
   findAll: <T extends Element>(selector: string) => T[];
   ref: <T extends Element>(name: string) => T | null;
   refAll: <T extends Element>(name: string) => T[];
-  log: (msg: string, ...args: unknown[]) => void;
 }
 
 export type CleanupFn = () => void;
@@ -23,6 +28,17 @@ export interface ComponentDefinition {
   init(ctx: ComponentContext): void | CleanupFn | Promise<void | CleanupFn>;
 }
 
+export interface GlobalDefinition {
+  deps?: string[];
+  init(ctx: GlobalContext): void | CleanupFn | Promise<void | CleanupFn>;
+}
+
+// One registry keyed by name — the wave loop and _computeWaves both look a name
+// up, and the discriminant narrows `def` at the call site that inits it.
+type Registration =
+  | { kind: 'component'; def: ComponentDefinition }
+  | { kind: 'global'; def: GlobalDefinition };
+
 type EventMap = {
   resize: { viewport: Viewport };
   motionchange: { prefersReducedMotion: boolean };
@@ -31,9 +47,10 @@ type EventMap = {
 type SystemEvent = keyof EventMap;
 type AnyEventCallback = (payload: EventMap[SystemEvent]) => void;
 
+// `element` is null for globals, which have no DOM node.
 interface Instance {
   name: string;
-  element: HTMLElement;
+  element: HTMLElement | null;
   ac: AbortController;
   cleanup: CleanupFn | undefined;
 }
@@ -60,10 +77,21 @@ function warnRootRef(name: string, element: HTMLElement, refName: string, helper
   );
 }
 
+// Names the failing unit, with the element when there is one.
+function warnFailure(instance: Instance, stage: string, err: unknown): void {
+  if (instance.element) {
+    console.warn(`[choreo] '${instance.name}' ${stage} failed on`, instance.element);
+  } else {
+    console.warn(`[choreo] global '${instance.name}' ${stage} failed`);
+  }
+  console.warn(err);
+}
+
 export class Choreo {
-  private definitions = new Map<string, ComponentDefinition>();
+  private definitions = new Map<string, Registration>();
   private instances: Instance[] = [];
   private active = new Set<HTMLElement>();
+  private activeGlobals = new Set<string>();
   private viewport: Viewport;
   private prefersReducedMotion: boolean;
   private subscribers = new Map<string, Set<AnyEventCallback>>();
@@ -148,7 +176,11 @@ export class Choreo {
   }
 
   register(name: string, def: ComponentDefinition): void {
-    this.definitions.set(name, def);
+    this.definitions.set(name, { kind: 'component', def });
+  }
+
+  registerGlobal(name: string, def: GlobalDefinition): void {
+    this.definitions.set(name, { kind: 'global', def });
   }
 
   async scan(): Promise<void> {
@@ -162,23 +194,30 @@ export class Choreo {
       const known = elements.filter(el => {
         if (this.active.has(el)) return false;
         const name = el.getAttribute('data-component');
-        return name !== null && this.definitions.has(name);
+        return name !== null && this.definitions.get(name)?.kind === 'component';
       });
 
-      if (known.length > 0) {
-        const namesPresent = new Set(
-          known.map(el => el.getAttribute('data-component') as string),
-        );
+      // A global's registration is its presence — there is no element to find.
+      // Live ones are excluded so a repeat scan never builds a second.
+      const namesPresent = new Set<string>();
+      for (const [name, reg] of this.definitions) {
+        if (reg.kind === 'global' && !this.activeGlobals.has(name)) namesPresent.add(name);
+      }
+      for (const el of known) {
+        namesPresent.add(el.getAttribute('data-component') as string);
+      }
 
+      if (namesPresent.size > 0) {
         const waves = this._computeWaves(namesPresent);
 
         for (const wave of waves) {
           await Promise.all(
             wave.flatMap(name => {
-              const def = this.definitions.get(name)!;
+              const reg = this.definitions.get(name)!;
+              if (reg.kind === 'global') return [this._initGlobal(name, reg.def)];
               return known
                 .filter(el => el.getAttribute('data-component') === name)
-                .map(el => this._initInstance(name, el, def));
+                .map(el => this._initInstance(name, el, reg.def));
             }),
           );
         }
@@ -204,7 +243,7 @@ export class Choreo {
     }
 
     for (const name of namesPresent) {
-      const def = this.definitions.get(name)!;
+      const { def } = this.definitions.get(name)!;
       const deps = (def.deps ?? []).filter(d => namesPresent.has(d));
       for (const dep of deps) {
         inDegree.set(name, inDegree.get(name)! + 1);
@@ -238,7 +277,7 @@ export class Choreo {
     return waves;
   }
 
-  private async _initInstance(
+  private _initInstance(
     name: string,
     element: HTMLElement,
     def: ComponentDefinition,
@@ -273,20 +312,48 @@ export class Choreo {
         : () => {},
     };
 
+    return this._runInit(instance, () => def.init(ctx));
+  }
+
+  private _initGlobal(name: string, def: GlobalDefinition): Promise<void> {
+    const ac = new AbortController();
+    const instance: Instance = { name, element: null, ac, cleanup: undefined };
+    this.instances.push(instance);
+    // Marked before the first await so a re-entrant scan can't build a second.
+    this.activeGlobals.add(name);
+
+    const ctx: GlobalContext = {
+      viewport: this.viewport,
+      prefersReducedMotion: this.prefersReducedMotion,
+      system: this,
+      ac,
+      log: import.meta.env.DEV
+        ? (msg: string, ...args: unknown[]) => console.log(`[${name}] ${msg}`, ...args)
+        : () => {},
+    };
+
+    return this._runInit(instance, () => def.init(ctx));
+  }
+
+  // Takes a thunk, not a promise: a synchronous throw from init has to land in
+  // the same catch as a rejection.
+  private async _runInit(
+    instance: Instance,
+    run: () => void | CleanupFn | Promise<void | CleanupFn>,
+  ): Promise<void> {
     try {
-      const result = await def.init(ctx);
+      const result = await run();
       if (typeof result === 'function') {
         // If destroy() ran while init was awaiting, call cleanup immediately
         // rather than storing it on an already-destroyed instance.
-        if (ac.signal.aborted) {
+        if (instance.ac.signal.aborted) {
           result();
         } else {
           instance.cleanup = result;
         }
       }
     } catch (err) {
-      console.warn(`[choreo] '${name}' init failed on`, element);
-      console.warn(err);
+      warnFailure(instance, 'init', err);
     }
   }
 
@@ -296,12 +363,12 @@ export class Choreo {
       try {
         instance.cleanup?.();
       } catch (err) {
-        console.warn(`[choreo] '${instance.name}' cleanup failed on`, instance.element);
-        console.warn(err);
+        warnFailure(instance, 'cleanup', err);
       }
     }
     this.instances = [];
     this.active.clear();
+    this.activeGlobals.clear();
   }
 
   dispose(): void {

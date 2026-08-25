@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
-import { defineComponent, Choreo } from './index';
+import { defineComponent, defineGlobal, Choreo } from './index';
 
 beforeAll(() => {
   Object.defineProperty(window, 'matchMedia', {
@@ -37,5 +37,19 @@ describe('defineComponent (browser)', () => {
     const before = window.__choreo;
     defineComponent('another', { init: vi.fn() });
     expect(window.__choreo).toBe(before);
+  });
+});
+
+// Registered last on purpose: this file shares one module-level singleton across
+// cases, and a global is always present — it would initialize on any scan a
+// later test triggers.
+describe('defineGlobal (browser)', () => {
+  it('registers on the same shared singleton and initializes with no element', async () => {
+    const init = vi.fn();
+    defineGlobal('shared-global', { init });
+
+    await window.__choreo!.scan();
+
+    expect(init).toHaveBeenCalledOnce();
   });
 });

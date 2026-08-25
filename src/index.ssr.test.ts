@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
-import { defineComponent, Choreo } from './index';
+import { defineComponent, defineGlobal, Choreo } from './index';
+
+describe('defineGlobal (SSR / no window)', () => {
+  it('is a no-op and does not throw when window is undefined', () => {
+    expect(typeof window).toBe('undefined');
+    expect(() => defineGlobal('foo', { init: vi.fn() })).not.toThrow();
+  });
+});
 
 describe('defineComponent (SSR / no window)', () => {
   it('is a no-op and does not throw when window is undefined', () => {

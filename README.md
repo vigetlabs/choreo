@@ -13,6 +13,7 @@
 - **Async readiness signaling** — Component signal their "ready" state
 - **Global event coordination** — Coordinates commonly tracked events: resize, prefers-reduced-motion, view transitions, unload
 - **Multiple instances** — every matching element gets its own isolated instance
+- **Global behaviors** — `defineGlobal()` registers a singleton with no DOM element: one instance, in the same dependency graph, torn down on navigation
 - **Single-file Astro component editing** — designed for single-file components in `.astro` with `<script>` tags
 - **Resilient error handling** — components fail without crashing the system
 - **Zero dependencies, no build step** — raw TypeScript source that your own project's Vite compiles
@@ -120,6 +121,67 @@ Each `init()` call receives:
 | `refAll` | `<T extends Element>(name: string) => T[]` | Finds every `[data-ref="name"]` within `element`, in document order (descendant-only) |
 | `log` | `(msg: string, ...args: unknown[]) => void` | Dev-only logger prefixed with the component name |
 
+### `defineGlobal(name, definition)`
+
+Registers a **singleton behavior with no DOM element** — smooth scroll, a ticker, a global
+cursor. Where a component's registration is an element, a global's registration *is* its
+presence: it always initializes, exactly once per page, and it is a first-class node in the
+dependency graph.
+
+```typescript
+import { defineGlobal } from '@viget/choreo';
+
+defineGlobal('smooth-scroll', {
+  init({ ac, system, prefersReducedMotion }) {
+    if (prefersReducedMotion) return;
+
+    const lenis = new Lenis();
+    system.on('resize', () => lenis.resize(), { signal: ac.signal });
+
+    return () => lenis.destroy();
+  },
+});
+```
+
+A component then depends on it by name, and the ordering is a contract rather than a
+coincidence of script evaluation order:
+
+```typescript
+defineComponent('hero', {
+  deps: ['smooth-scroll'],
+  init({ element }) { /* smooth-scroll is ready */ },
+});
+```
+
+Globals are **page-scoped**, like components: `astro:page-load` destroys and rebuilds them,
+so nothing leaks across a view transition.
+
+Put `defineGlobal()` in a layout-level `<script>` if the behavior should exist site-wide —
+a call inside a component's `<script>` is only bundled onto pages that render that
+component, so the global exists only there.
+
+A `<script>` tag in a layout does *not* work as a substitute: it never enters the
+dependency graph (so `deps` on it resolves to nothing and the dependent initializes
+immediately), and it is not an instance, so `<ClientRouter />` navigations leave its
+listeners running against a swapped-out page.
+
+### Global context
+
+`defineGlobal`'s `init()` receives the shared subset of the component context. There is no
+`element`, and no `find`/`findAll`/`ref`/`refAll` — a global has nothing to scope a query
+to, so reach for `document` directly.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `viewport` | `Readonly<Viewport>` | Live reference — always current `{ width, height }` |
+| `prefersReducedMotion` | `boolean` | Value at time of init |
+| `system` | `Choreo` | System reference for `on`/`off` event subscription |
+| `ac` | `AbortController` | System-managed controller — aborted on destroy |
+| `log` | `(msg: string, ...args: unknown[]) => void` | Dev-only logger prefixed with the global name |
+
+Cleanup works exactly as it does for components: `ac.abort()` fires, then the cleanup
+function returned from `init()`.
+
 ### `system.on(event, callback, options?)` / `system.off(event, callback)`
 
 Opt-in subscription to global system events:
@@ -156,6 +218,16 @@ Wave 2: ['carousel']        // deps: ['hero']
 
 Waves run sequentially; instances within a wave initialize concurrently. A failed `init()` logs a warning but still unblocks its dependents. Circular dependencies throw: `"Circular dependency detected among: hero, carousel"`.
 
+Globals participate in the same graph, in both directions — a component can `deps` on a
+global and a global can `deps` on a component. Two differences follow from a global having
+no element:
+
+- **Globals are not "first."** A global with no `deps` lands in wave 0 and initializes
+  *concurrently* with dep-free components. Ordering comes from `deps`, never from kind.
+- **A global is always present**, so a dependency on one never silently resolves to nothing
+  — and a cycle involving globals throws on every page rather than only on pages where both
+  elements happened to be in the DOM.
+
 ## Global events (auto-wired)
 
 | Event | Behavior |
@@ -178,6 +250,8 @@ __choreo.scan()      // scan for newly added [data-component] elements
 ```
 
 Elements that already have a live instance are skipped by `scan()`, so calling it manually only picks up elements added to the DOM since the last scan — it never double-initializes.
+
+Globals appear in `__choreo.instances` with `element: null`. Like elements with a live instance, a global that is already running is skipped by `scan()`.
 
 The `log` context helper prefixes output with the component name, and is a no-op in production:
 
